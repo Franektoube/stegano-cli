@@ -16,7 +16,7 @@ def encode(
     bits_per_channel: int = 2,
     quiet: bool = False
 ) -> None:
-    """Encode a file into an image using multi-LSB steganography."""
+    """Encode a file into an image using multi-LSB steganography + full image randomization."""
 
     bits_per_channel = validate_bits(bits_per_channel)
     img_path = validate_image_path(image_path)
@@ -55,14 +55,13 @@ def encode(
     if len(payload) > capacity:
         raise ValueError(
             f"File too large! Need {format_size(len(payload))}, "
-            f"but image can hold {format_size(capacity)} at {bits_per_channel} bits/channel."
+            f"but image can hold only {format_size(capacity)} at {bits_per_channel} bits/channel."
         )
 
     if not quiet:
         print(f"Image: {w}x{h}, {num_channels} channels")
         print(f"Capacity at {bits_per_channel} bits/channel: {format_size(capacity)}")
         print(f"Payload size: {format_size(len(payload))} ({len(payload) / capacity * 100:.1f}% used)")
-        print("Encoding...")
 
     # Convert payload to n-bit values
     values = bytes_to_bits_array(payload, bits_per_channel)
@@ -70,16 +69,33 @@ def encode(
     # Flatten pixel array
     flat_pixels = pixels.flatten().copy()
 
-    # FIX: maska musi być uint8 — & 0xFF przycina do 8 bitów
     mask = np.uint8((0xFF << bits_per_channel) & 0xFF)
-
-    # Embed: clear LSBs then set new values
     num_values = len(values)
+
+    # Embed real payload
     flat_pixels[:num_values] = (flat_pixels[:num_values] & mask) | values
+
+    # === KLUCZOWA ZMIANA ===
+    # Wypełniamy resztę obrazu losowymi danymi na tym samym poziomie LSB
+    # Dzięki temu cały obraz wygląda na "zaszumiony" — dużo trudniejszy do wykrycia
+    remaining = len(flat_pixels) - num_values
+    if remaining > 0:
+        # Losujemy wartości z zakresu 0..(2^bits_per_channel - 1)
+        random_values = np.random.randint(
+            0, 1 << bits_per_channel, size=remaining, dtype=np.uint8
+        )
+        flat_pixels[num_values:] = (flat_pixels[num_values:] & mask) | random_values
+
+        if not quiet:
+            randomized_size = (remaining * bits_per_channel) // 8
+            print(f"Randomized remaining {format_size(randomized_size)} of LSB data for better stealth")
+    # =======================
+
+    if not quiet:
+        print("Encoding...")
 
     # Reshape back
     result = flat_pixels.reshape(h, w, num_channels)
-
     if num_channels == 1:
         result = result.squeeze()
 
@@ -94,5 +110,4 @@ def encode(
 
     if not quiet:
         print(f"Encoded successfully → {out_path}")
-        out_size = out_path.stat().st_size
-        print(f"Output file size: {format_size(out_size)}")
+        print(f"Output file size: {format_size(out_path.stat().st_size)}")
